@@ -1,0 +1,619 @@
+<script>
+    window.onerror = function(msg, src, line, col, err) { console.error("Error: " + msg + " at " + line + ":" + col); return false; };
+
+    if (typeof Swal === 'undefined') {
+        window.Swal = { fire: function(t, tx, i) { alert(t + (tx ? "\n" + tx : "")); return Promise.resolve(); } };
+    }
+
+    const state = { 
+        user: JSON.parse(localStorage.getItem('butc_user')) || null, 
+        currentView: localStorage.getItem('butc_view') || 'login', 
+        editingReportId: null 
+    };
+    
+    const DEPARTMENTS = ["ช่างยนต์", "ช่างไฟฟ้า", "ช่างซ่อมบำรุง", "เมคคาทรอนิกส์", "การบัญชี", "เทคโนโลยีธุรกิจดิจิทัล", "การจัดการสำนักงานดิจิทัล", "เทคนิคพื้นฐาน"];
+    let dom = {};
+
+    function navigate(view) { 
+        state.currentView = view; 
+        state.editingReportId = null; 
+        localStorage.setItem('butc_view', view);
+        render(); 
+    }
+
+    function navigateHome() {
+        if (!state.user) navigate('login');
+        else navigate(state.user.role === 'Admin' ? 'admin' : 'dashboard');
+    }
+
+    function initDatePickers() {
+        if (typeof flatpickr !== 'undefined') {
+            flatpickr("input[type=date]", {
+                locale: "th",
+                dateFormat: "Y-m-d",
+                altInput: true,
+                altFormat: "d/m/Y"
+            });
+        }
+    }
+
+    function render() {
+        if (!dom.login) {
+            dom.login = document.getElementById('login-section');
+            dom.register = document.getElementById('register-section');
+            dom.profile = document.getElementById('profile-section');
+            dom.dynamic = document.getElementById('dynamic-container');
+            dom.navLinks = document.getElementById('nav-links');
+            dom.spinner = document.getElementById('loading-spinner');
+            dom.userGreeting = document.getElementById('user-greeting');
+        }
+
+        if (state.user && state.currentView === 'login') {
+            state.currentView = state.user.role === 'Admin' ? 'admin' : 'dashboard';
+        }
+
+        [dom.login, dom.register, dom.profile, dom.dynamic].forEach(s => { if(s) s.classList.add('d-none'); });
+        updateNavbar();
+
+        switch (state.currentView) {
+            case 'login': dom.login.classList.remove('d-none'); break;
+            case 'register': dom.register.classList.remove('d-none'); break;
+            case 'profile': renderProfile(); break;
+            case 'dashboard': renderDashboard(); break;
+            case 'admin': renderAdmin(); break;
+        }
+    }
+
+    function updateNavbar() {
+        if (!dom.navLinks) return;
+        let links = '';
+        if (!state.user) {
+            if (dom.userGreeting) dom.userGreeting.classList.add('d-none');
+            links = `<li class="nav-item"><a class="nav-link ${state.currentView === 'login' ? 'active' : ''}" href="#" onclick="navigate('login'); return false;">เข้าสู่ระบบ</a></li><li class="nav-item"><a class="nav-link ${state.currentView === 'register' ? 'active' : ''}" href="#" onclick="navigate('register'); return false;">ลงทะเบียน</a></li>`;
+        } else {
+            if (dom.userGreeting) {
+                dom.userGreeting.innerText = `สวัสดี, ${state.user.fullName}`;
+                dom.userGreeting.classList.remove('d-none');
+            }
+            if (state.user.role === 'Admin') links += `<li class="nav-item"><a class="nav-link ${state.currentView === 'admin' ? 'active' : ''}" href="#" onclick="navigate('admin'); return false;">ระบบแอดมิน</a></li>`;
+            links += `<li class="nav-item"><a class="nav-link ${state.currentView === 'dashboard' ? 'active' : ''}" href="#" onclick="navigate('dashboard'); return false;">บันทึกรายงาน</a></li><li class="nav-item"><a class="nav-link ${state.currentView === 'profile' ? 'active' : ''}" href="#" onclick="navigate('profile'); return false;">ข้อมูลส่วนตัว</a></li><li class="nav-item"><a class="nav-link text-danger" href="#" onclick="logout(); return false;">ออกจากระบบ</a></li>`;
+        }
+        dom.navLinks.innerHTML = links;
+    }
+
+    function showLoading(show) { if (dom.spinner) dom.spinner.classList.toggle('d-none', !show); }
+    
+    function logout() { 
+        state.user = null; 
+        state.currentView = 'login'; 
+        localStorage.removeItem('butc_user');
+        localStorage.removeItem('butc_view');
+        render(); 
+    }
+
+    function handleLogin(e) {
+        e.preventDefault();
+        const data = Object.fromEntries(new FormData(e.target).entries());
+        showLoading(true);
+        google.script.run.withSuccessHandler(res => {
+            showLoading(false);
+            if (res.success) { 
+                state.user = res.user; 
+                state.currentView = res.user.role === 'Admin' ? 'admin' : 'dashboard'; 
+                localStorage.setItem('butc_user', JSON.stringify(res.user));
+                localStorage.setItem('butc_view', state.currentView);
+                render(); 
+            }
+            else Swal.fire(res.status === 'Pending' ? 'รอการอนุมัติ' : 'ข้อผิดพลาด', res.message, res.status === 'Pending' ? 'info' : 'error');
+        }).withFailureHandler(() => { showLoading(false); Swal.fire('Error', 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์', 'error'); }).loginUser(data);
+    }
+
+    function handleRegister(e) {
+        e.preventDefault();
+        showLoading(true);
+        google.script.run.withSuccessHandler(res => {
+            showLoading(false);
+            if (res.success) { Swal.fire('สำเร็จ', res.message, 'success').then(() => navigate('login')); }
+            else Swal.fire('ข้อผิดพลาด', res.message, 'error');
+        }).registerUser(Object.fromEntries(new FormData(e.target).entries()));
+    }
+
+    function renderProfile() {
+        dom.profile.classList.remove('d-none');
+        const form = document.getElementById('profile-form');
+        document.getElementById('profile-email-display').value = state.user.email;
+        form.email.value = state.user.email;
+        form.fullName.value = state.user.fullName;
+        form.department.value = state.user.department;
+        form.phone.value = state.user.phone;
+        form.password.value = "";
+        form.onsubmit = function(e) {
+            e.preventDefault();
+            showLoading(true);
+            google.script.run.withSuccessHandler(res => {
+                showLoading(false);
+                if (res.success) { 
+                    state.user = res.user; 
+                    localStorage.setItem('butc_user', JSON.stringify(res.user));
+                    Swal.fire('สำเร็จ', 'อัปเดตเรียบร้อย', 'success').then(() => render()); 
+                }
+                else Swal.fire('ข้อผิดพลาด', res.message, 'error');
+            }).updateUserProfile(Object.fromEntries(new FormData(e.target).entries()));
+        };
+    }
+
+    function renderDashboard() {
+        dom.dynamic.classList.remove('d-none');
+        let deptCheckboxes = DEPARTMENTS.map(dept => `<div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" name="targetDepartments" value="${dept}" id="dept-${dept}"><label class="form-check-label" for="dept-${dept}">${dept}</label></div>`).join('');
+        const periods = [{id:1,t:"08:00"},{id:2,t:"09:00"},{id:3,t:"10:00"},{id:4,t:"11:00"},{id:5,t:"12:00"},{id:6,t:"13:00"},{id:7,t:"14:00"},{id:8,t:"15:00"},{id:9,t:"16:00"},{id:10,t:"17:00"},{id:11,t:"18:00"},{id:12,t:"19:00"}];
+        let periodGrid = periods.map(p => `<div class="period-item" data-id="${p.id}" onclick="togglePeriod(this)"><strong>คาบ ${p.id}</strong><br><small>${p.t}</small></div>`).join('');
+
+        dom.dynamic.innerHTML = `
+            <div class="row">
+                <div class="col-lg-8">
+                    <div class="card p-4 mb-4 shadow-sm border-0">
+                        <h4 class="mb-4 text-primary font-weight-bold" id="form-title">บันทึกรายงานการสอน</h4>
+                        <form id="report-form">
+                            <input type="hidden" name="reportId" id="edit-report-id">
+                            <div class="row mb-3">
+                                <div class="col-md-6"><label class="form-label">วันที่สอน</label><input type="date" name="teachingDate" id="teachingDate" class="form-control" required><small id="thai-date-display" class="text-muted"></small></div>
+                                <div class="col-md-6"><label class="form-label">ระดับชั้น</label><input type="text" name="teachingLevel" class="form-control" required placeholder="ปวช. 1/1"></div>
+                            </div>
+                            <div class="row mb-3">
+                                <div class="col-md-6"><label class="form-label">ชื่อวิชา</label><input type="text" name="subjectName" class="form-control" required></div>
+                                <div class="col-md-6"><label class="form-label">เรื่องที่สอน</label><input type="text" name="teachingTopic" class="form-control" required></div>
+                            </div>
+                            <div class="mb-3"><label class="form-label d-block">แผนกวิชานักเรียน นักศึกษา</label><div class="border rounded p-3 bg-light">${deptCheckboxes}</div></div>
+                            <div class="mb-3"><label class="form-label">คาบเรียน</label><div class="period-grid">${periodGrid}</div><div class="mt-2 text-primary">รวม: <span id="total-hours">0</span> ชม.</div></div>
+                            <div class="row mb-3">
+                                <div class="col-md-3"><label class="form-label small">นักเรียน นักศึกษาทั้งหมด</label><input type="number" name="totalStudents" id="calc-total" class="form-control" required min="0"></div>
+                                <div class="col-md-3"><label class="form-label small text-success">มา</label><input type="number" name="presentCount" id="calc-present" class="form-control" required min="0"></div>
+                                <div class="col-md-3"><label class="form-label small text-warning">ลา</label><input type="number" name="leaveCount" id="calc-leave" class="form-control" required min="0"></div>
+                                <div class="col-md-3"><label class="form-label small text-danger">ขาด</label><input type="number" name="absentCount" id="calc-absent" class="form-control bg-light" required readonly tabindex="-1"></div>
+                            </div>
+                            <div id="calc-error" class="text-danger small mb-3 d-none">จำนวนรวมของนักเรียนที่มาและลา ต้องไม่เกินจำนวนนักเรียนทั้งหมด</div>
+                            <div class="mb-3"><label class="form-label">ปัญหา</label><textarea name="problems" class="form-control" rows="1"></textarea></div>
+                            <div class="mb-3"><label class="form-label">วิธีแก้</label><textarea name="solutions" class="form-control" rows="1"></textarea></div>
+                            <div class="mb-3">
+                                <label class="form-label">รูปภาพ (สูงสุด 3 รูป)</label>
+                                <input type="file" id="image-upload" class="form-control" accept="image/*" multiple>
+                                <div id="image-previews" class="row mt-2"></div>
+                            </div>
+                            <button type="submit" class="btn btn-primary w-100 py-2" id="submit-btn">ส่งรายงาน</button>
+                        </form>
+                    </div>
+                </div>
+                <div class="col-lg-4">
+                    <div class="card p-4 shadow-sm border-0">
+                        <h5 class="mb-3">ประวัติการส่ง</h5>
+                        <input type="date" id="history-date-filter" class="form-control form-control-sm mb-3">
+                        <div id="report-history" class="list-group list-group-flush" style="max-height: 600px; overflow-y: auto;">
+                            <p class="text-center text-muted">กำลังโหลด...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal fade" id="userViewModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content border-0"><div class="modal-header bg-primary text-white"><h5 class="modal-title">รายละเอียดรายงาน</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div><div class="modal-body bg-light" id="user-view-modal-body"></div></div></div></div>
+        `;
+
+        // Set default date to today and max to today
+        const today = new Date();
+        const todayStr = today.toISOString().split('T')[0];
+        const dateInput = document.getElementById('teachingDate');
+        dateInput.value = todayStr;
+        dateInput.setAttribute('max', todayStr);
+        document.getElementById('thai-date-display').innerText = "พ.ศ.: " + toThaiBE(dateInput.value);
+
+        dateInput.onchange = e => { document.getElementById('thai-date-display').innerText = "พ.ศ.: " + toThaiBE(e.target.value); };
+        
+        // Auto-calculate logic
+        const calcTotal = document.getElementById('calc-total');
+        const calcPresent = document.getElementById('calc-present');
+        const calcLeave = document.getElementById('calc-leave');
+        const calcAbsent = document.getElementById('calc-absent');
+        const calcError = document.getElementById('calc-error');
+        const submitBtn = document.getElementById('submit-btn');
+
+        const calculateAbsent = () => {
+            const total = parseInt(calcTotal.value) || 0;
+            const present = parseInt(calcPresent.value) || 0;
+            const leave = parseInt(calcLeave.value) || 0;
+            
+            const absent = total - present - leave;
+            
+            if (present + leave > total && calcTotal.value !== "") {
+                calcError.classList.remove('d-none');
+                calcTotal.classList.add('is-invalid');
+                calcPresent.classList.add('is-invalid');
+                calcLeave.classList.add('is-invalid');
+                calcAbsent.value = "";
+                submitBtn.disabled = true;
+            } else {
+                calcError.classList.add('d-none');
+                calcTotal.classList.remove('is-invalid');
+                calcPresent.classList.remove('is-invalid');
+                calcLeave.classList.remove('is-invalid');
+                calcAbsent.value = Math.max(0, absent);
+                submitBtn.disabled = false;
+            }
+        };
+
+        calcTotal.addEventListener('input', calculateAbsent);
+        calcPresent.addEventListener('input', calculateAbsent);
+        calcLeave.addEventListener('input', calculateAbsent);
+
+        document.getElementById('image-upload').onchange = handleImageUpload;
+        document.getElementById('report-form').onsubmit = handleReportSubmit;
+        
+        const historyDateInput = document.getElementById('history-date-filter');
+        historyDateInput.value = today.toISOString().split('T')[0];
+        historyDateInput.onchange = e => loadHistory(e.target.value);
+        
+        reportImages = []; // Reset images array when rendering dashboard
+        loadHistory(historyDateInput.value);
+        initDatePickers();
+    }
+
+    let userReports = [];
+    function loadHistory(filterDate) {
+        google.script.run.withSuccessHandler(reports => {
+            userReports = reports;
+            displayHistory(filterDate);
+        }).getUserReports(state.user.email);
+    }
+
+    function displayHistory(filterDate) {
+        const container = document.getElementById('report-history');
+        if (!container) return;
+        let reports = userReports;
+        if (filterDate) { const search = toThaiBE(filterDate); reports = reports.filter(r => r.date === search); }
+        if (reports.length === 0) { container.innerHTML = '<p class="text-center text-muted p-3">ไม่พบข้อมูล</p>'; return; }
+        container.innerHTML = reports.map(r => `
+            <div class="list-group-item px-0 py-3 border-bottom">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div style="flex-grow: 1; cursor: pointer;" onclick="viewUserReportDetails('${r.id}')">
+                        <h6 class="mb-1 text-primary">สอน: ${r.date}</h6>
+                        <p class="mb-1 small text-dark"><strong>${r.subject}</strong></p>
+                        <small class="text-muted d-block mb-1"><i class="bi bi-clock"></i> ส่ง: ${r.timestamp} ${r.isLate ? '<span class="text-danger fw-bold">(ล่าช้า)</span>' : ''}</small>
+                        <span class="badge ${r.status === 'Approved' ? 'bg-success' : (r.status === 'Rejected' ? 'bg-danger' : 'bg-warning')}">${r.status}</span>
+                    </div>
+                    <button class="btn btn-sm btn-outline-secondary ms-2" onclick="editReport('${r.id}')">แก้ไข</button>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function viewUserReportDetails(id) {
+        const r = userReports.find(x => x.id === id);
+        if (!r) return;
+        const body = document.getElementById('user-view-modal-body');
+        body.innerHTML = `
+            <div class="p-2">
+                <div class="mb-3 p-2 bg-white rounded border">
+                    <p class="mb-0"><strong>เวลาที่ส่งรายงาน:</strong> ${r.timestamp} ${r.isLate ? '<span class="text-danger fw-bold">(ล่าช้า)</span>' : ''}</p>
+                </div>
+                <h6>วิชา: ${r.subject}</h6>
+                <p>เรื่อง: ${r.topic}</p>
+                <p>ระดับชั้น: ${r.level} | แผนกนักเรียน: ${r.depts}</p>
+                <p>คาบ: ${r.periods} (${r.hours} ชม.)</p>
+                <hr>
+                <p>ผู้เรียน: ทั้งหมด ${r.totalStud} มา ${r.present} ขาด ${r.absent} ลา ${r.leave}</p>
+                <div class="bg-white p-2 rounded border mb-3"><strong>ปัญหา:</strong> ${r.problems || '-'}<br><strong>วิธีแก้:</strong> ${r.solutions || '-'}</div>
+                <div class="row g-2">${r.images.map(img => `<div class="col-4"><img src="${img}" class="img-fluid rounded border shadow-sm"></div>`).join('')}</div>
+            </div>
+        `;
+        new bootstrap.Modal(document.getElementById('userViewModal')).show();
+    }
+
+    function editReport(id) {
+        const r = userReports.find(x => x.id === id);
+        if (!r) return;
+        state.editingReportId = id;
+        document.getElementById('edit-report-id').value = id;
+        document.getElementById('form-title').innerText = "แก้ไขรายงานการสอน";
+        document.getElementById('submit-btn').innerText = "อัปเดตและส่งใหม่";
+        const form = document.getElementById('report-form');
+        
+        // Convert date back to YYYY-MM-DD for input
+        const dParts = r.date.split('/');
+        if(dParts.length === 3) {
+            form.teachingDate.value = `${parseInt(dParts[2])-543}-${dParts[1]}-${dParts[0]}`;
+            document.getElementById('thai-date-display').innerText = "พ.ศ.: " + r.date;
+        }
+
+        form.subjectName.value = r.subject; form.teachingTopic.value = r.topic; form.teachingLevel.value = r.level;
+        form.totalStudents.value = r.totalStud; form.presentCount.value = r.present; form.absentCount.value = r.absent;
+        form.leaveCount.value = r.leave; form.problems.value = r.problems; form.solutions.value = r.solutions;
+        const depts = r.depts.split(', ');
+        document.querySelectorAll('input[name="targetDepartments"]').forEach(cb => { cb.checked = depts.includes(cb.value); });
+        selectedPeriods.clear();
+        document.querySelectorAll('.period-item').forEach(el => el.classList.remove('selected'));
+        r.periods.split(', ').forEach(p => { selectedPeriods.add(p); const el = document.querySelector(`.period-item[data-id="${p}"]`); if (el) el.classList.add('selected'); });
+        document.getElementById('total-hours').innerText = selectedPeriods.size;
+        
+        // Load existing images
+        reportImages = r.images.map(url => ({ url: url, isNew: false, data: url })); // for existing, data is just the url to pass back
+        renderImagePreviews();
+
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    const selectedPeriods = new Set();
+    function togglePeriod(el) {
+        const id = el.getAttribute('data-id');
+        if (selectedPeriods.has(id)) { selectedPeriods.delete(id); el.classList.remove('selected'); }
+        else { selectedPeriods.add(id); el.classList.add('selected'); }
+        document.getElementById('total-hours').innerText = selectedPeriods.size;
+    }
+
+    let reportImages = [];
+    async function handleImageUpload(e) {
+        const files = e.target.files;
+        if (reportImages.length + files.length > 3) { 
+            Swal.fire('เตือน', 'อัปโหลดได้สูงสุด 3 รูปเท่านั้น', 'warning'); 
+            e.target.value = ''; 
+            return; 
+        }
+        showLoading(true);
+        for (let file of Array.from(files)) {
+            const reader = new FileReader();
+            const compressed = await new Promise(res => {
+                reader.readAsDataURL(file);
+                reader.onload = ev => {
+                    const img = new Image();
+                    img.src = ev.target.result;
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        const MAX = 600;
+                        let w = img.width, h = img.height;
+                        if (w > MAX) { h *= MAX/w; w = MAX; }
+                        canvas.width = w; canvas.height = h;
+                        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                        const url = canvas.toDataURL('image/jpeg', 0.6);
+                        res({ name: file.name, mimeType: 'image/jpeg', data: url.split(',')[1], isNew: true });
+                    };
+                };
+            });
+            reportImages.push(compressed);
+        }
+        renderImagePreviews();
+        e.target.value = ''; // Reset input so same file can be selected again if deleted
+        showLoading(false);
+    }
+
+    function renderImagePreviews() {
+        const previewContainer = document.getElementById('image-previews');
+        if (!previewContainer) return;
+        previewContainer.innerHTML = '';
+        reportImages.forEach((imgObj, index) => {
+            let src = imgObj.isNew ? `data:${imgObj.mimeType};base64,${imgObj.data}` : imgObj.url;
+            previewContainer.innerHTML += `
+                <div class="col-4 position-relative mb-2">
+                    <img src="${src}" class="image-preview border rounded shadow-sm w-100" style="height: 100px; object-fit: cover;">
+                    <button type="button" class="btn btn-danger btn-sm position-absolute top-0 end-0 m-1 p-0 px-1" onclick="deleteImage(${index})">x</button>
+                </div>
+            `;
+        });
+    }
+
+    function deleteImage(index) {
+        reportImages.splice(index, 1);
+        renderImagePreviews();
+    }
+
+    function handleReportSubmit(e) {
+        e.preventDefault();
+        
+        const todayStr = new Date().toISOString().split('T')[0];
+        const selectedDate = document.getElementById('teachingDate').value;
+        if (selectedDate > todayStr) {
+            return Swal.fire('ข้อผิดพลาด', 'ไม่อนุญาตให้บันทึกรายงานล่วงหน้า', 'error');
+        }
+
+        if (selectedPeriods.size === 0) return Swal.fire('เตือน', 'เลือกคาบ', 'warning');
+        const depts = Array.from(document.querySelectorAll('input[name="targetDepartments"]:checked')).map(cb => cb.value);
+        if (depts.length === 0) return Swal.fire('เตือน', 'เลือกแผนก', 'warning');
+        
+        const data = Object.fromEntries(new FormData(e.target).entries());
+        data.targetDepartments = depts.join(', ');
+        data.periods = Array.from(selectedPeriods).sort((a,b)=>a-b).join(', ');
+        data.totalHours = selectedPeriods.size;
+        data.teachingDate = toThaiBE(data.teachingDate);
+        data.images = reportImages;
+        data.userEmail = state.user.email;
+        showLoading(true);
+        google.script.run.withSuccessHandler(res => {
+            showLoading(false);
+            if (res.success) Swal.fire('สำเร็จ', res.message || 'ส่งแล้ว', 'success').then(() => { selectedPeriods.clear(); renderDashboard(); });
+            else Swal.fire('พลาด', res.message, 'error');
+        }).submitReport(data);
+    }
+
+    function renderAdmin() {
+        dom.dynamic.classList.remove('d-none');
+        let deptOptions = DEPARTMENTS.map(d => `<option value="${d}">${d}</option>`).join('');
+        dom.dynamic.innerHTML = `
+            <div class="card p-4 shadow-sm border-0">
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h4 class="text-primary font-weight-bold mb-0">ระบบจัดการแอดมิน</h4>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-danger btn-sm" onclick="printReport('daily')">พิมพ์ PDF รายวัน</button>
+                        <button class="btn btn-danger btn-sm" onclick="printReport('weekly')">พิมพ์ PDF รายสัปดาห์</button>
+                    </div>
+                </div>
+                <ul class="nav nav-tabs mb-4" id="adminTabs">
+                    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#reports-panel">ตรวจสอบรายงาน</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#users-panel">อนุมัติผู้ใช้</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#teachers-panel" onclick="loadTeacherDirectory()">รายชื่อครู</button></li>
+                </ul>
+                <div class="tab-content">
+                    <div class="tab-pane fade show active" id="reports-panel">
+                        <div class="row g-2 mb-3 align-items-end">
+                            <div class="col-md-3"><label class="small">แผนกวิชาครู</label><select id="admin-filter-dept" class="form-select form-select-sm"><option value="">ทุกแผนก</option>${deptOptions}</select></div>
+                            <div class="col-md-3"><label class="small">วันที่</label><input type="date" id="admin-filter-date" class="form-control form-control-sm"></div>
+                            <div class="col-md-6 text-end">
+                                <button class="btn btn-sm btn-success" onclick="handleBulkAction('approve')">อนุมัติที่เลือก</button>
+                            </div>
+                        </div>
+                        <div id="all-reports-list" class="table-responsive"></div>
+                    </div>
+                    <div class="tab-pane fade" id="users-panel"><div id="pending-users-list" class="table-responsive mt-3"></div></div>
+                    <div class="tab-pane fade" id="teachers-panel"><div id="teacher-directory-list" class="table-responsive mt-3"></div></div>
+                </div>
+            </div>
+            <div class="modal fade" id="detailModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content border-0"><div class="modal-header bg-primary text-white"><h5 class="modal-title">รายละเอียดรายงาน</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div><div class="modal-body bg-light" id="detail-modal-body"></div></div></div></div>
+        `;
+        
+        // Set default date to today for admin filter
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('admin-filter-date').value = today;
+
+        loadPendingUsers(); 
+        loadAllReports();
+        
+        document.getElementById('admin-filter-dept').onchange = filterAdminReports;
+        document.getElementById('admin-filter-date').onchange = filterAdminReports;
+        initDatePickers();
+    }
+
+    let allReports = [];
+    function loadAllReports() { 
+        google.script.run.withSuccessHandler(res => { 
+            allReports = res; 
+            filterAdminReports(); // Apply default filter immediately
+        }).getAllReports(); 
+    }
+
+    function displayAdminReports(reports) {
+        const container = document.getElementById('all-reports-list');
+        if (!reports || reports.length === 0) { container.innerHTML = '<p class="text-center text-muted p-3">ไม่มีข้อมูล</p>'; return; }
+        let html = `<table class="table table-sm table-hover align-middle"><thead><tr>
+            <th><input type="checkbox" id="select-all-reports" onclick="toggleSelectAll(this)"></th>
+            <th>วันที่สอน / เวลาที่ส่ง</th><th>ชื่อครู</th><th>วิชา</th><th>สถานะ</th><th class="text-center">จัดการ</th>
+        </tr></thead><tbody>`;
+        html += reports.map(r => `<tr>
+            <td><input type="checkbox" class="report-check" value="${r.id}"></td>
+            <td>
+                <div>สอน: ${r.date}</div>
+                <small class="text-muted d-block mt-1">ส่ง: ${r.timestamp}</small>
+                ${r.isLate ? '<span class="badge bg-danger mt-1">ส่งล่าช้า</span>' : ''}
+            </td>
+            <td>${r.teacherName}</td><td><small>${r.subject}</small></td>
+            <td><span class="badge ${r.status === 'Approved' ? 'bg-success' : (r.status === 'Rejected' ? 'bg-danger' : 'bg-warning')}">${r.status}</span></td>
+            <td class="text-center">
+                <div class="btn-group btn-group-xs">
+                    <button class="btn btn-primary py-0 px-2" onclick="viewReportDetails('${r.id}')">ดู</button>
+                    ${r.status === 'Pending' ? `<button class="btn btn-success py-0 px-2" onclick="handleReportAction('${r.id}', 'approve')">✔</button><button class="btn btn-danger py-0 px-2" onclick="handleReportAction('${r.id}', 'reject')">✘</button>` : `<button class="btn btn-outline-warning py-0 px-2" onclick="handleReportAction('${r.id}', 'cancel')">↩</button>`}
+                </div>
+            </td>
+        </tr>`).join('');
+        container.innerHTML = html + '</tbody></table>';
+    }
+
+    function toggleSelectAll(source) { document.querySelectorAll('.report-check').forEach(cb => cb.checked = source.checked); }
+
+    function handleBulkAction(action) {
+        const selectedIds = Array.from(document.querySelectorAll('.report-check:checked')).map(cb => cb.value);
+        if (selectedIds.length === 0) return Swal.fire('เตือน', 'กรุณาเลือกรายการ', 'warning');
+        Swal.fire({ title: `อนุมัติ ${selectedIds.length} รายการ?`, icon: 'question', showCancelButton: true }).then(res => {
+            if (res.isConfirmed) {
+                showLoading(true);
+                google.script.run.withSuccessHandler(res => { showLoading(false); Swal.fire('สำเร็จ', res.message, 'success'); loadAllReports(); }).bulkApproveReports(selectedIds);
+            }
+        });
+    }
+
+    function filterAdminReports() {
+        const dept = document.getElementById('admin-filter-dept').value.toLowerCase();
+        const dateRaw = document.getElementById('admin-filter-date').value;
+        const date = dateRaw ? toThaiBE(dateRaw) : "";
+        const filtered = allReports.filter(r => (dept === "" || r.depts.toLowerCase().includes(dept)) && (date === "" || r.date === date));
+        displayAdminReports(filtered);
+    }
+
+    function viewReportDetails(id) {
+        const r = allReports.find(x => x.id === id);
+        if (!r) return;
+        const body = document.getElementById('detail-modal-body');
+        body.innerHTML = `
+            <div class="p-2">
+                <div class="mb-3 p-2 bg-white rounded border">
+                    <p class="mb-0"><strong>เวลาที่ส่งรายงาน:</strong> ${r.timestamp} ${r.isLate ? '<span class="text-danger fw-bold">(ล่าช้า)</span>' : ''}</p>
+                </div>
+                <h6>ผู้สอน: ${r.teacherName} (${r.email})</h6>
+                <p>ระดับชั้น: ${r.level} | แผนกนักเรียน: ${r.depts}</p>
+                <hr>
+                <p><strong>วิชา:</strong> ${r.subject} | <strong>คาบ:</strong> ${r.periods}</p>
+                <p><strong>เรื่อง:</strong> ${r.topic}</p>
+                <p><strong>ผู้เรียน:</strong> ทั้งหมด ${r.totalStud} มา ${r.present} ขาด ${r.absent} ลา ${r.leave}</p>
+                <div class="bg-white p-2 rounded border mb-3"><strong>ปัญหา:</strong> ${r.problems || '-'}<br><strong>วิธีแก้:</strong> ${r.solutions || '-'}</div>
+                <div class="row g-2">${r.images.map(img => `<div class="col-4"><img src="${img}" class="img-fluid rounded border shadow-sm"></div>`).join('')}</div>
+                <div class="mt-4 d-flex gap-2">
+                    ${r.status === 'Pending' ? `<button class="btn btn-success flex-grow-1" onclick="handleReportAction('${r.id}', 'approve')">อนุมัติรายงาน</button><button class="btn btn-danger flex-grow-1" onclick="handleReportAction('${r.id}', 'reject')">ปฏิเสธ</button>` : `<button class="btn btn-warning flex-grow-1" onclick="handleReportAction('${r.id}', 'cancel')">ยกเลิกการอนุมัติ (กลับไปแก้ไข)</button>`}
+                </div>
+            </div>
+        `;
+        new bootstrap.Modal(document.getElementById('detailModal')).show();
+    }
+
+    function loadTeacherDirectory() {
+        const container = document.getElementById('teacher-directory-list');
+        container.innerHTML = '<p class="text-center text-muted p-3">กำลังโหลด...</p>';
+        google.script.run.withSuccessHandler(teachers => {
+            if (!teachers || teachers.length === 0) { container.innerHTML = '<p class="text-center text-muted">ไม่พบข้อมูล</p>'; return; }
+            let html = `<table class="table table-hover table-sm align-middle"><thead><tr><th>ชื่อ-นามสกุล</th><th>แผนก</th><th>เบอร์โทร</th><th>สถานะ</th></tr></thead><tbody>`;
+            html += teachers.map(t => `<tr><td>${t.fullName}<br><small class="text-muted">${t.email}</small></td><td>${t.department}</td><td>${t.phone}</td><td><span class="badge ${t.status === 'Approved' ? 'bg-success' : 'bg-warning'}">${t.status}</span></td></tr>`).join('');
+            container.innerHTML = html + '</tbody></table>';
+        }).getAllTeachers();
+    }
+
+    function printReport(type) {
+        let title = type === 'daily' ? 'พิมพ์รายงานรายวัน' : 'พิมพ์รายงานรายสัปดาห์';
+        let html = type === 'daily' ? '<input type="date" id="date1" class="swal2-input">' : '<div class="small mb-1">เริ่ม:</div><input type="date" id="date1" class="swal2-input"><div class="small mt-2 mb-1">ถึง:</div><input type="date" id="date2" class="swal2-input">';
+        Swal.fire({
+            title: title, html: html, showCancelButton: true, confirmButtonText: 'สร้าง PDF',
+            didOpen: () => { initDatePickers(); },
+            preConfirm: () => {
+                const d1 = document.getElementById('date1').value, d2 = document.getElementById('date2') ? document.getElementById('date2').value : null;
+                if (!d1 || (type === 'weekly' && !d2)) { Swal.showValidationMessage('กรุณาเลือกวันที่ให้ครบ'); return null; }
+                return { d1, d2 };
+            }
+        }).then(res => {
+            if (res.isConfirmed) {
+                showLoading(true);
+                google.script.run.withSuccessHandler(res => {
+                    showLoading(false);
+                    if (res.success) { const a = document.createElement('a'); a.href = 'data:application/pdf;base64,' + res.data; a.download = res.filename; a.click(); }
+                    else Swal.fire('พลาด', res.message, 'error');
+                }).generateDailyPDF(toThaiBE(res.value.d1), res.value.d2 ? toThaiBE(res.value.d2) : null);
+            }
+        });
+    }
+
+    function loadPendingUsers() {
+        google.script.run.withSuccessHandler(users => {
+            const container = document.getElementById('pending-users-list');
+            if (!container) return;
+            if (!users || users.length === 0) { container.innerHTML = '<p class="text-center text-muted p-3">ไม่มีคำขอใหม่</p>'; return; }
+            let html = `<table class="table table-hover table-sm"><thead><tr><th>ชื่อ</th><th>แผนก</th><th>จัดการ</th></tr></thead><tbody>`;
+            html += users.map(u => `<tr><td>${u.fullName}</td><td>${u.department}</td><td><button class="btn btn-sm btn-success me-1" onclick="handleUserAction('${u.email}', 'approve')">✔</button><button class="btn btn-sm btn-danger" onclick="handleUserAction('${u.email}', 'reject')">✘</button></td></tr>`).join('');
+            container.innerHTML = html + '</tbody></table>';
+        }).getPendingUsers();
+    }
+
+    function handleUserAction(email, action) { showLoading(true); google.script.run.withSuccessHandler(res => { showLoading(false); if(res.success) { Swal.fire('สำเร็จ', 'เรียบร้อย', 'success'); loadPendingUsers(); } }).approveUser(email, action); }
+    function handleReportAction(id, action) {
+        const modal = bootstrap.Modal.getInstance(document.getElementById('detailModal')); if (modal) modal.hide();
+        showLoading(true);
+        google.script.run.withSuccessHandler(res => { showLoading(false); if(res.success) { Swal.fire('สำเร็จ', 'เรียบร้อย', 'success'); loadAllReports(); } }).approveReport(id, action);
+    }
+
+    function toThaiBE(dateStr) {
+        if (!dateStr) return '';
+        const parts = dateStr.split('-');
+        if (parts.length === 3) return parts[2] + "/" + parts[1] + "/" + (parseInt(parts[0]) + 543);
+        return dateStr;
+    }
+
+    window.onload = function() { render(); document.getElementById('login-form').onsubmit = handleLogin; document.getElementById('register-form').onsubmit = handleRegister; };
+</script>
